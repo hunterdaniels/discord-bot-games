@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tic-Tac-Toe</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f4f8; /* Light blue-grey background */
+        }
+        .game-board {
+            display: grid;
+            grid-template-columns: repeat(3, 100px);
+            grid-template-rows: repeat(3, 100px);
+            gap: 8px;
+            width: 316px; /* 3*100 + 2*8 */
+            height: 316px; /* 3*100 + 2*8 */
+        }
+        .cell {
+            width: 100px;
+            height: 100px;
+            background-color: #e2e8f0; /* Lighter blue-grey for cells */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 3rem;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: background-color 0.2s ease-in-out;
+            color: #2d3748; /* Dark text for symbols */
+        }
+        .cell:hover {
+            background-color: #cbd5e0; /* Even lighter on hover */
+        }
+        .cell.x {
+            color: #ef4444; /* Red for X */
+        }
+        .cell.o {
+            color: #3b82f6; /* Blue for O */
+        }
+        .message-box {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            z-index: 1000;
+            text-align: center;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease-in-out, visibility 0.3s ease-in-out;
+        }
+        .message-box.show {
+            opacity: 1;
+            visibility: visible;
+        }
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 999;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease-in-out, visibility 0.3s ease-in-out;
+        }
+        .overlay.show {
+            opacity: 1;
+            visibility: visible;
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4">
+    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-md text-center">
+        <h1 class="text-4xl font-bold text-gray-800 mb-6">Tic-Tac-Toe</h1>
+        <div id="status" class="text-xl font-semibold text-gray-700 mb-6">Player X's Turn</div>
+        <div class="game-board mx-auto" id="game-board">
+            <div class="cell rounded-md" data-index="0"></div>
+            <div class="cell rounded-md" data-index="1"></div>
+            <div class="cell rounded-md" data-index="2"></div>
+            <div class="cell rounded-md" data-index="3"></div>
+            <div class="cell rounded-md" data-index="4"></div>
+            <div class="cell rounded-md" data-index="5"></div>
+            <div class="cell rounded-md" data-index="6"></div>
+            <div class="cell rounded-md" data-index="7"></div>
+            <div class="cell rounded-md" data-index="8"></div>
+        </div>
+        <button id="reset-button" class="mt-8 px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition-colors duration-300">Reset Game</button>
+    </div>
+
+    <div id="message-box" class="message-box">
+        <p id="message-text" class="text-2xl font-semibold text-gray-800 mb-4"></p>
+        <button id="message-ok-button" class="px-5 py-2 bg-indigo-500 text-white font-semibold rounded-md hover:bg-indigo-600 transition-colors duration-300">OK</button>
+    </div>
+    <div id="overlay" class="overlay"></div>
+
+    <script>
+        const cells = document.querySelectorAll('.cell');
+        const statusDisplay = document.getElementById('status');
+        const resetButton = document.getElementById('reset-button');
+        const messageBox = document.getElementById('message-box');
+        const messageText = document.getElementById('message-text');
+        const messageOkButton = document.getElementById('message-ok-button');
+        const overlay = document.getElementById('overlay');
+
+        let gameActive = true;
+        let currentPlayer = 'X';
+        let gameState = ['', '', '', '', '', '', '', '', '']; // Represents the board state
+
+        const winningConditions = [
+            [0, 1, 2],
+            [3, 4, 5],
+            [6, 7, 8],
+            [0, 3, 6],
+            [1, 4, 7],
+            [2, 5, 8],
+            [0, 4, 8],
+            [2, 4, 6]
+        ];
+
+        const handleCellPlayed = (clickedCell, clickedCellIndex) => {
+            gameState[clickedCellIndex] = currentPlayer;
+            clickedCell.innerHTML = currentPlayer;
+            clickedCell.classList.add(currentPlayer.toLowerCase());
+        };
+
+        const handlePlayerChange = () => {
+            currentPlayer = currentPlayer === 'X' ? 'O' : 'X';
+            statusDisplay.innerHTML = `Player ${currentPlayer}'s Turn`;
+        };
+
+        const displayMessage = (message) => {
+            messageText.innerText = message;
+            messageBox.classList.add('show');
+            overlay.classList.add('show');
+        };
+
+        const hideMessage = () => {
+            messageBox.classList.remove('show');
+            overlay.classList.remove('show');
+        };
+
+        const handleResultValidation = () => {
+            let roundWon = false;
+            for (let i = 0; i < winningConditions.length; i++) {
+                const winCondition = winningConditions[i];
+                let a = gameState[winCondition[0]];
+                let b = gameState[winCondition[1]];
+                let c = gameState[winCondition[2]];
+                if (a === '' || b === '' || c === '') {
+                    continue;
+                }
+                if (a === b && b === c) {
+                    roundWon = true;
+                    break;
+                }
+            }
+
+            if (roundWon) {
+                displayMessage(`Player ${currentPlayer} has won!`);
+                gameActive = false;
+                // Here you would send win data to your Discord bot's database
+                // Example: sendGameResultToBot(currentPlayer, 'win');
+                return;
+            }
+
+            let roundDraw = !gameState.includes('');
+            if (roundDraw) {
+                displayMessage('Game ended in a draw!');
+                gameActive = false;
+                // Here you would send draw data to your Discord bot's database
+                // Example: sendGameResultToBot('draw');
+                return;
+            }
+
+            handlePlayerChange();
+        };
+
+        const handleCellClick = (event) => {
+            const clickedCell = event.target;
+            const clickedCellIndex = parseInt(clickedCell.dataset.index);
+
+            if (gameState[clickedCellIndex] !== '' || !gameActive) {
+                return;
+            }
+
+            handleCellPlayed(clickedCell, clickedCellIndex);
+            handleResultValidation();
+        };
+
+        const handleResetGame = () => {
+            gameActive = true;
+            currentPlayer = 'X';
+            gameState = ['', '', '', '', '', '', '', '', ''];
+            statusDisplay.innerHTML = `Player ${currentPlayer}'s Turn`;
+            cells.forEach(cell => {
+                cell.innerHTML = '';
+                cell.classList.remove('x', 'o');
+            });
+            hideMessage();
+        };
+
+        cells.forEach(cell => cell.addEventListener('click', handleCellClick));
+        resetButton.addEventListener('click', handleResetGame);
+        messageOkButton.addEventListener('click', hideMessage);
+    </script>
+</body>
+</html>
