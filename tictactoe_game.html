@@ -3,9 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tic-Tac-Toe</title>
+    <title>Tic-Tac-Toe Online</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <!-- Socket.IO client library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
     <style>
         body {
             font-family: 'Inter', sans-serif;
@@ -33,8 +35,8 @@
             transition: background-color 0.2s ease-in-out;
             color: #2d3748; /* Dark text for symbols */
         }
-        .cell:hover {
-            background-color: #cbd5e0; /* Even lighter on hover */
+        .cell:hover:not(.x):not(.o) {
+            background-color: #cbd5e0; /* Even lighter on hover for empty cells */
         }
         .cell.x {
             color: #ef4444; /* Red for X */
@@ -56,6 +58,7 @@
             opacity: 0;
             visibility: hidden;
             transition: opacity 0.3s ease-in-out, visibility 0.3s ease-in-out;
+            max-width: 90%;
         }
         .message-box.show {
             opacity: 1;
@@ -77,12 +80,46 @@
             opacity: 1;
             visibility: visible;
         }
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 1.5rem;
+            z-index: 2000;
+            transition: opacity 0.3s ease-in-out;
+        }
+        .loading-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid #fff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 1rem;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body class="flex items-center justify-center min-h-screen p-4">
     <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-md text-center">
-        <h1 class="text-4xl font-bold text-gray-800 mb-6">Tic-Tac-Toe</h1>
-        <div id="status" class="text-xl font-semibold text-gray-700 mb-6">Player X's Turn</div>
+        <h1 class="text-4xl font-bold text-gray-800 mb-6">Tic-Tac-Toe Online</h1>
+        <div id="status" class="text-xl font-semibold text-gray-700 mb-6">Connecting...</div>
+        <div id="game-info" class="text-gray-600 mb-4"></div>
         <div class="game-board mx-auto" id="game-board">
             <div class="cell rounded-md" data-index="0"></div>
             <div class="cell rounded-md" data-index="1"></div>
@@ -94,7 +131,7 @@
             <div class="cell rounded-md" data-index="7"></div>
             <div class="cell rounded-md" data-index="8"></div>
         </div>
-        <button id="reset-button" class="mt-8 px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition-colors duration-300">Reset Game</button>
+        <button id="reset-button" class="mt-8 px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition-colors duration-300" disabled>Request Rematch</button>
     </div>
 
     <div id="message-box" class="message-box">
@@ -103,115 +140,195 @@
     </div>
     <div id="overlay" class="overlay"></div>
 
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <p id="loading-text">Connecting to game server...</p>
+    </div>
+
     <script>
+        // --- Configuration ---
+        const GAME_SERVER_URL = "http://127.0.0.1:5000"; // IMPORTANT: Change this to your server's public IP/domain in production!
+
+        // --- DOM Elements ---
         const cells = document.querySelectorAll('.cell');
         const statusDisplay = document.getElementById('status');
+        const gameInfoDisplay = document.getElementById('game-info');
         const resetButton = document.getElementById('reset-button');
         const messageBox = document.getElementById('message-box');
         const messageText = document.getElementById('message-text');
         const messageOkButton = document.getElementById('message-ok-button');
         const overlay = document.getElementById('overlay');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingText = document.getElementById('loading-text');
 
-        let gameActive = true;
-        let currentPlayer = 'X';
-        let gameState = ['', '', '', '', '', '', '', '', '']; // Represents the board state
+        // --- Game State Variables ---
+        let socket;
+        let gameId = null;
+        let discordId = null; // The ID of the current user playing
+        let playerSymbol = null; // 'X' or 'O' for the current user
+        let currentGameState = null; // Stores the state received from the server
 
-        const winningConditions = [
-            [0, 1, 2],
-            [3, 4, 5],
-            [6, 7, 8],
-            [0, 3, 6],
-            [1, 4, 7],
-            [2, 5, 8],
-            [0, 4, 8],
-            [2, 4, 6]
-        ];
+        // --- Utility Functions ---
+        function getQueryParams() {
+            const params = new URLSearchParams(window.location.search);
+            return {
+                game_id: params.get('game_id'),
+                discord_id: params.get('discord_id')
+            };
+        }
 
-        const handleCellPlayed = (clickedCell, clickedCellIndex) => {
-            gameState[clickedCellIndex] = currentPlayer;
-            clickedCell.innerHTML = currentPlayer;
-            clickedCell.classList.add(currentPlayer.toLowerCase());
-        };
-
-        const handlePlayerChange = () => {
-            currentPlayer = currentPlayer === 'X' ? 'O' : 'X';
-            statusDisplay.innerHTML = `Player ${currentPlayer}'s Turn`;
-        };
-
-        const displayMessage = (message) => {
+        function displayMessage(message) {
             messageText.innerText = message;
             messageBox.classList.add('show');
             overlay.classList.add('show');
-        };
+        }
 
-        const hideMessage = () => {
+        function hideMessage() {
             messageBox.classList.remove('show');
             overlay.classList.remove('show');
-        };
+        }
 
-        const handleResultValidation = () => {
-            let roundWon = false;
-            for (let i = 0; i < winningConditions.length; i++) {
-                const winCondition = winningConditions[i];
-                let a = gameState[winCondition[0]];
-                let b = gameState[winCondition[1]];
-                let c = gameState[winCondition[2]];
-                if (a === '' || b === '' || c === '') {
-                    continue;
-                }
-                if (a === b && b === c) {
-                    roundWon = true;
-                    break;
-                }
-            }
+        function showLoading(text = "Loading...") {
+            loadingText.innerText = text;
+            loadingOverlay.classList.remove('hidden');
+        }
 
-            if (roundWon) {
-                displayMessage(`Player ${currentPlayer} has won!`);
-                gameActive = false;
-                // Here you would send win data to your Discord bot's database
-                // Example: sendGameResultToBot(currentPlayer, 'win');
-                return;
-            }
+        function hideLoading() {
+            loadingOverlay.classList.add('hidden');
+        }
 
-            let roundDraw = !gameState.includes('');
-            if (roundDraw) {
-                displayMessage('Game ended in a draw!');
-                gameActive = false;
-                // Here you would send draw data to your Discord bot's database
-                // Example: sendGameResultToBot('draw');
-                return;
-            }
+        function updateBoardUI() {
+            if (!currentGameState) return;
 
-            handlePlayerChange();
-        };
-
-        const handleCellClick = (event) => {
-            const clickedCell = event.target;
-            const clickedCellIndex = parseInt(clickedCell.dataset.index);
-
-            if (gameState[clickedCellIndex] !== '' || !gameActive) {
-                return;
-            }
-
-            handleCellPlayed(clickedCell, clickedCellIndex);
-            handleResultValidation();
-        };
-
-        const handleResetGame = () => {
-            gameActive = true;
-            currentPlayer = 'X';
-            gameState = ['', '', '', '', '', '', '', '', ''];
-            statusDisplay.innerHTML = `Player ${currentPlayer}'s Turn`;
-            cells.forEach(cell => {
-                cell.innerHTML = '';
+            cells.forEach((cell, index) => {
+                cell.innerHTML = currentGameState.board[index];
                 cell.classList.remove('x', 'o');
+                if (currentGameState.board[index] === 'X') {
+                    cell.classList.add('x');
+                } else if (currentGameState.board[index] === 'O') {
+                    cell.classList.add('o');
+                }
             });
-            hideMessage();
-        };
 
-        cells.forEach(cell => cell.addEventListener('click', handleCellClick));
-        resetButton.addEventListener('click', handleResetGame);
+            if (currentGameState.winner) {
+                statusDisplay.innerHTML = `Player ${currentGameState.winner} wins!`;
+                resetButton.disabled = false;
+            } else if (currentGameState.draw) {
+                statusDisplay.innerHTML = `It's a draw!`;
+                resetButton.disabled = false;
+            } else {
+                statusDisplay.innerHTML = `Player ${currentGameState.turn}'s Turn`;
+                resetButton.disabled = true; // Only enable reset after game ends
+            }
+            gameInfoDisplay.innerHTML = `You are **${playerSymbol || '...'}**`;
+        }
+
+        // --- Socket.IO Event Handlers ---
+        function setupSocket() {
+            const params = getQueryParams();
+            gameId = params.game_id;
+            discordId = params.discord_id;
+
+            if (!gameId || !discordId) {
+                displayMessage("Error: Missing game ID or Discord ID. Please join via Discord bot.");
+                hideLoading();
+                return;
+            }
+
+            socket = io(GAME_SERVER_URL);
+
+            socket.on('connect', () => {
+                console.log('Connected to game server.');
+                loadingText.innerText = `Connected. Joining game ${gameId}...`;
+                socket.emit('join_game', { game_id: gameId, discord_id: discordId });
+            });
+
+            socket.on('disconnect', () => {
+                console.log('Disconnected from game server.');
+                displayMessage("Disconnected from game server. Please refresh or rejoin.");
+                showLoading("Disconnected from game server. Reconnecting...");
+            });
+
+            socket.on('error', (data) => {
+                console.error('Server Error:', data.message);
+                displayMessage(`Error: ${data.message}`);
+                hideLoading();
+            });
+
+            socket.on('message', (data) => {
+                console.log('Server Message:', data.message);
+                // Can display this as a temporary notification or status update
+                if (data.message.includes("Waiting for another player")) {
+                     statusDisplay.innerHTML = data.message;
+                     loadingText.innerText = data.message;
+                } else {
+                    displayMessage(data.message);
+                }
+            });
+            
+            socket.on('game_ready', (data) => {
+                console.log('Game Ready:', data);
+                hideLoading();
+                playerSymbol = data.your_symbol;
+                gameInfoDisplay.innerHTML = `You are **${playerSymbol}**`;
+                statusDisplay.innerHTML = "Game started!";
+            });
+
+            socket.on('game_state', (gameState) => {
+                console.log('Received game state:', gameState);
+                currentGameState = gameState;
+                updateBoardUI();
+                hideLoading(); // Hide loading once first state is received
+            });
+
+            socket.on('game_over', (data) => {
+                console.log('Game Over:', data);
+                if (data.winner) {
+                    displayMessage(`Game Over! Player ${data.winner} wins!`);
+                } else if (data.draw) {
+                    displayMessage("Game Over! It's a draw!");
+                }
+                resetButton.disabled = false; // Enable reset button
+                // Optionally, inform Discord bot via an API call here.
+                // fetch('/api/report_game_result', { method: 'POST', body: JSON.stringify({ gameId, winner: data.winner, draw: data.draw }) });
+            });
+
+            socket.on('opponent_left', (data) => {
+                displayMessage(data.message);
+                resetButton.disabled = true; // Disable reset if opponent left mid-game
+                currentGameState.winner = playerSymbol; // Award win to player if opponent leaves
+                statusDisplay.innerHTML = `Opponent left. You win!`;
+                updateBoardUI();
+            });
+        }
+
+        // --- Event Listeners ---
+        cells.forEach(cell => cell.addEventListener('click', () => {
+            if (!socket || !currentGameState || currentGameState.winner || currentGameState.draw || playerSymbol !== currentGameState.turn) {
+                displayMessage("It's not your turn, or the game is not ready/over.");
+                return;
+            }
+            const cellIndex = parseInt(cell.dataset.index);
+            if (currentGameState.board[cellIndex] === '') {
+                socket.emit('make_move', { game_id: gameId, cell_index: cellIndex });
+            } else {
+                displayMessage("That cell is already taken!");
+            }
+        }));
+
+        resetButton.addEventListener('click', () => {
+            if (socket && gameId) {
+                socket.emit('reset_game', { game_id: gameId });
+            }
+        });
+
         messageOkButton.addEventListener('click', hideMessage);
+
+        // --- Initialization ---
+        window.onload = () => {
+            showLoading("Connecting to game server...");
+            setupSocket();
+        };
     </script>
 </body>
 </html>
