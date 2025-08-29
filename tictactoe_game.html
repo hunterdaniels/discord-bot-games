@@ -147,7 +147,8 @@
 
     <script>
         // --- Configuration ---
-        const GAME_SERVER_URL = "http://127.0.0.1:5000"; // IMPORTANT: Change this to your server's public IP/domain in production!
+        // This will now be dynamically set from the URL parameter
+        let GAME_SERVER_URL = "http://127.0.0.1:5000"; // Default for local testing, overridden by URL
 
         // --- DOM Elements ---
         const cells = document.querySelectorAll('.cell');
@@ -165,6 +166,7 @@
         let socket;
         let gameId = null;
         let discordId = null; // The ID of the current user playing
+        let gameType = null; // 'tic_tac_toe' or 'connect_four'
         let playerSymbol = null; // 'X' or 'O' for the current user
         let currentGameState = null; // Stores the state received from the server
 
@@ -173,7 +175,9 @@
             const params = new URLSearchParams(window.location.search);
             return {
                 game_id: params.get('game_id'),
-                discord_id: params.get('discord_id')
+                discord_id: params.get('discord_id'),
+                game_type: params.get('game_type'),
+                server_url: params.get('server_url') // New: Read server_url from URL
             };
         }
 
@@ -228,9 +232,15 @@
             const params = getQueryParams();
             gameId = params.game_id;
             discordId = params.discord_id;
+            gameType = params.game_type;
+            
+            // Override GAME_SERVER_URL if provided in URL parameters
+            if (params.server_url) {
+                GAME_SERVER_URL = params.server_url;
+            }
 
-            if (!gameId || !discordId) {
-                displayMessage("Error: Missing game ID or Discord ID. Please join via Discord bot.");
+            if (!gameId || !discordId || !gameType) {
+                displayMessage("Error: Missing game ID, Discord ID, or game type. Please join via Discord bot.");
                 hideLoading();
                 return;
             }
@@ -240,7 +250,13 @@
             socket.on('connect', () => {
                 console.log('Connected to game server.');
                 loadingText.innerText = `Connected. Joining game ${gameId}...`;
-                socket.emit('join_game', { game_id: gameId, discord_id: discordId });
+                socket.emit('join_game', { game_id: gameId, discord_id: discordId, game_type: gameType });
+            });
+
+            socket.on('connect_error', (error) => {
+                console.error("Socket.IO Connect Error:", error);
+                displayMessage(`Failed to connect to game server: ${error.message}. Ensure the game server is running and accessible.`);
+                hideLoading();
             });
 
             socket.on('disconnect', () => {
@@ -270,7 +286,7 @@
                 console.log('Game Ready:', data);
                 hideLoading();
                 playerSymbol = data.your_symbol;
-                gameInfoDisplay.innerHTML = `You are **${playerSymbol}**`;
+                gameInfoDisplay.innerHTML = `You are **${playerSymbol || '...'}**`;
                 statusDisplay.innerHTML = "Game started!";
             });
 
@@ -296,9 +312,11 @@
             socket.on('opponent_left', (data) => {
                 displayMessage(data.message);
                 resetButton.disabled = true; // Disable reset if opponent left mid-game
-                currentGameState.winner = playerSymbol; // Award win to player if opponent leaves
-                statusDisplay.innerHTML = `Opponent left. You win!`;
-                updateBoardUI();
+                if (currentGameState && !currentGameState.winner) { // Award win only if game wasn't already decided
+                    currentGameState.winner = playerSymbol; 
+                    statusDisplay.innerHTML = `Opponent left. You win!`;
+                    updateBoardUI();
+                }
             });
         }
 
@@ -318,11 +336,17 @@
 
         resetButton.addEventListener('click', () => {
             if (socket && gameId) {
-                socket.emit('reset_game', { game_id: gameId });
+                // Confirm with user before resetting
+                displayMessage("Are you sure you want to request a rematch?");
+                document.getElementById('message-ok-button').onclick = () => {
+                    hideMessage();
+                    socket.emit('reset_game', { game_id: gameId });
+                };
             }
         });
 
-        messageOkButton.addEventListener('click', hideMessage);
+        messageOkButton.addEventListener('click', hideMessage); // Default behavior
+        document.getElementById('message-ok-button').onclick = hideMessage; // Ensure default on load
 
         // --- Initialization ---
         window.onload = () => {
