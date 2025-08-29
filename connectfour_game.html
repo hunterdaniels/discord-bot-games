@@ -1,397 +1,383 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Connect Four Online</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-    <!-- Socket.IO client library -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
-    <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #f0f4f8; /* Light blue-grey background */
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            padding: 1rem;
-        }
-        .game-container {
-            background-color: #3b82f6; /* Blue board for Connect Four */
-            border-radius: 12px;
-            padding: 1rem;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-            max-width: fit-content;
-        }
-        .connect4-board {
-            display: grid;
-            grid-template-columns: repeat(7, 60px); /* 7 columns */
-            grid-template-rows: repeat(6, 60px);   /* 6 rows */
-            gap: 4px;
-        }
-        .cell {
-            width: 60px;
-            height: 60px;
-            background-color: #e2e8f0; /* Empty slot color */
-            border-radius: 50%;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            cursor: pointer;
-            transition: background-color 0.2s ease-in-out;
-            position: relative; /* For the dropping animation */
-            overflow: hidden; /* Ensure chip stays within bounds during drop */
-        }
-        .cell.hovered:not(.red):not(.yellow) {
-            background-color: #cbd5e0; /* Lighter on hover for empty cells */
-        }
-        .chip {
-            width: 50px; /* Slightly smaller than cell */
-            height: 50px; /* Slightly smaller than cell */
-            border-radius: 50%;
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            margin: auto;
-            transition: transform 0.3s ease-out; /* For dropping effect */
-        }
-        .chip.red {
-            background-color: #ef4444; /* Red chip */
-        }
-        .chip.yellow {
-            background-color: #fcd34d; /* Yellow chip */
-        }
+from flask import Flask, render_template, request
+from flask_socketio import SocketIO, join_room, leave_room, emit
+import random
+import uuid # For generating unique game IDs
+import sys
 
-        /* --- Message Box and Overlay (Reused from Tic-Tac-Toe) --- */
-        .message-box {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background-color: white;
-            padding: 2rem;
-            border-radius: 12px;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-            z-index: 1000;
-            text-align: center;
-            opacity: 0;
-            visibility: hidden;
-            transition: opacity 0.3s ease-in-out, visibility 0.3s ease-in-out;
-            max-width: 90%;
-        }
-        .message-box.show {
-            opacity: 1;
-            visibility: visible;
-        }
-        .overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.5);
-            z-index: 999;
-            opacity: 0;
-            visibility: hidden;
-            transition: opacity 0.3s ease-in-out, visibility 0.3s ease-in-out;
-        }
-        .overlay.show {
-            opacity: 1;
-            visibility: visible;
-        }
-        .loading-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.7);
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            color: white;
-            font-size: 1.5rem;
-            z-index: 2000;
-            transition: opacity 0.3s ease-in-out;
-        }
-        .loading-overlay.hidden {
-            opacity: 0;
-            pointer-events: none;
-        }
-        .spinner {
-            border: 4px solid rgba(255, 255, 255, 0.3);
-            border-top: 4px solid #fff;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin-bottom: 1rem;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
-</head>
-<body class="flex items-center justify-center min-h-screen p-4">
-    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-lg text-center">
-        <h1 class="text-4xl font-bold text-gray-800 mb-6">Connect Four Online</h1>
-        <div id="status" class="text-xl font-semibold text-gray-700 mb-6">Connecting...</div>
-        <div id="game-info" class="text-gray-600 mb-4"></div>
+# Suppress Flask development server warnings if not in debug mode
+if not (len(sys.argv) > 1 and sys.argv[1] == 'run'): # Check if not explicitly running with 'flask run'
+    import warnings
+    warnings.filterwarnings('ignore', category=DeprecationWarning)
+    warnings.filterwarnings('ignore', category=UserWarning)
+
+app = Flask(__name__, template_folder='.') # Look for templates in the current directory
+# Allow all origins for development. For production, specify origins:
+# socketio = SocketIO(app, cors_allowed_origins=["https://your-github-pages-url.com", "http://your-other-domain.com"])
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Dictionary to store active game states
+# Structure: {game_id: {
+#   type: 'tic_tac_toe'|'connect_four',
+#   players: {discord_id: {sid: current_sid, symbol: 'X'|'O'|'R'|'Y'}},
+#   board: [],
+#   turn: 'X'|'R',
+#   winner: None, # 'X', 'O', 'R', 'Y' or Discord ID of winner
+#   draw: False,
+#   player_count: 0 # Track how many unique Discord users are in the game
+# }}
+active_games = {}
+
+@app.route('/')
+def index():
+    """Serves a basic status page for the game server."""
+    return "<h1>Game Server Running!</h1><p>This is the Flask-SocketIO backend for your Discord games. Games are accessed via specific URLs provided by the Discord bot.</p>"
+
+@socketio.on('connect')
+def handle_connect():
+    print(f"Client connected: {request.sid}")
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print(f"Client disconnected: {request.sid}")
+    # Logic to handle player leaving a game by their session ID (sid)
+    player_discord_id_who_left = None
+    game_id_of_player = None
+
+    for game_id, game_state in list(active_games.items()):
+        for discord_id, player_info in game_state['players'].items():
+            if player_info['sid'] == request.sid:
+                player_discord_id_who_left = discord_id
+                game_id_of_player = game_id
+                break
+        if player_discord_id_who_left:
+            break
+    
+    if player_discord_id_who_left and game_id_of_player:
+        game_state = active_games[game_id_of_player]
+        print(f"Player {player_discord_id_who_left} (SID: {request.sid}) left game {game_id_of_player} (type: {game_state['type']})")
         
-        <div class="game-container mx-auto">
-            <div class="connect4-board" id="connect4-board">
-                <!-- Cells will be dynamically generated by JavaScript -->
-            </div>
-        </div>
+        # Remove player from game state
+        del game_state['players'][player_discord_id_who_left]
+        game_state['player_count'] -= 1
+
+        if game_state['player_count'] == 0:
+            print(f"Game {game_id_of_player} is now empty, deleting.")
+            del active_games[game_id_of_player]
+        else:
+            # Notify remaining player that opponent left
+            # Determine the remaining player's discord_id and SID
+            remaining_player_discord_id = list(game_state['players'].keys())[0]
+            remaining_player_sid = game_state['players'][remaining_player_discord_id]['sid']
+
+            # Only emit game_over if the game wasn't already decided
+            if not game_state['winner'] and not game_state['draw']:
+                game_state['winner'] = remaining_player_discord_id # Opponent wins
+                emit('opponent_left', {'message': 'Your opponent has left the game. You win!'}, room=remaining_player_sid)
+                emit('game_over', {
+                    'winner_discord_id': remaining_player_discord_id, 
+                    'message': f"Opponent left. You win by default!"
+                }, room=remaining_player_sid) # Only send to the remaining player for this specific message
+            else:
+                emit('opponent_left', {'message': 'Your opponent has left the game.'}, room=remaining_player_sid)
+
+@socketio.on('join_game')
+def handle_join_game(data):
+    game_id = data.get('game_id')
+    discord_id = data.get('discord_id')
+    game_type = data.get('game_type') # 'tic_tac_toe' or 'connect_four'
+    
+    if not game_id or not discord_id or not game_type:
+        emit('error', {'message': 'Missing game_id, discord_id or game_type'}, room=request.sid)
+        return
+
+    # Create new game if it doesn't exist
+    if game_id not in active_games:
+        if game_type == 'tic_tac_toe':
+            active_games[game_id] = {
+                'type': game_type,
+                'players': {}, # Keyed by discord_id: {sid, symbol}
+                'board': ['', '', '', '', '', '', '', '', ''],
+                'turn': 'X',
+                'winner': None,
+                'draw': False,
+                'player_count': 0
+            }
+        elif game_type == 'connect_four':
+            active_games[game_id] = {
+                'type': game_type,
+                'players': {}, # Keyed by discord_id: {sid, symbol}
+                'board': [['' for _ in range(7)] for _ in range(6)], # 6 rows, 7 columns
+                'turn': 'R', # 'R' for Red, 'Y' for Yellow
+                'winner': None,
+                'draw': False,
+                'player_count': 0
+            }
+        else:
+            emit('error', {'message': 'Invalid game_type.'}, room=request.sid)
+            return
+
+        print(f"Created new {game_type} game: {game_id}")
+
+    game_state = active_games[game_id]
+
+    # Prevent joining wrong game type
+    if game_state['type'] != game_type:
+        emit('error', {'message': f"This is a {game_state['type']} game, not {game_type}."}, room=request.sid)
+        return
+
+    # Check if this discord_id is already in the game (re-joining)
+    if discord_id in game_state['players']:
+        old_sid = game_state['players'][discord_id]['sid']
+        if old_sid != request.sid:
+            # Player is re-connecting with a new session ID
+            # Remove old SID from room if it was there
+            if old_sid:
+                try:
+                    leave_room(game_id, sid=old_sid)
+                    print(f"Player {discord_id} (OLD SID: {old_sid}) left room {game_id}.")
+                except KeyError: # Sid might have already left the room if disconnect was handled
+                    pass 
+            game_state['players'][discord_id]['sid'] = request.sid
+            join_room(game_id)
+            print(f"Player {discord_id} (NEW SID: {request.sid}) re-connected to {game_type} game {game_id}.")
+            emit('message', {'message': 'Reconnected to game.'}, room=request.sid)
+            socketio.emit('game_state', game_state, room=game_id) # Send updated state to all players
+            return
+        else:
+            # Already connected with this SID, just confirm and send current state
+            join_room(game_id)
+            print(f"Player {discord_id} (SID: {request.sid}) already in {game_type} game {game_id}.")
+            socketio.emit('game_state', game_state, room=game_id) # Send current state to ensure sync
+            return
+
+    # If it's a new player (not re-connecting)
+    if game_state['player_count'] >= 2:
+        emit('error', {'message': 'Game is full.'}, room=request.sid)
+        return
+
+    # Assign symbol and add new player
+    symbol = None
+    if game_type == 'tic_tac_toe':
+        symbol = 'X' if game_state['player_count'] == 0 else 'O'
+    elif game_type == 'connect_four':
+        symbol = 'R' if game_state['player_count'] == 0 else 'Y'
+    
+    game_state['players'][discord_id] = {'sid': request.sid, 'symbol': symbol}
+    game_state['player_count'] += 1
+    
+    join_room(game_id)
+    print(f"Player {discord_id} (SID: {request.sid}) joined {game_type} game {game_id} as {symbol}.")
+
+    if game_state['player_count'] == 1:
+        emit('message', {'message': f"Waiting for another player to join... You are {symbol}."}, room=request.sid)
+    elif game_state['player_count'] == 2:
+        # Both players are in, start the game
+        player1_symbol = 'X' if game_type == 'tic_tac_toe' else 'R'
+        player2_symbol = 'O' if game_type == 'tic_tac_toe' else 'Y'
+
+        player1_info = next(p for p in game_state['players'].values() if p['symbol'] == player1_symbol)
+        player2_info = next(p for p in game_state['players'].values() if p['symbol'] == player2_symbol)
+
+        # Send game_ready to player 1
+        emit('game_ready', {
+            'player1_discord_id': next(did for did, p in game_state['players'].items() if p['symbol'] == player1_symbol),
+            'player2_discord_id': next(did for did, p in game_state['players'].items() if p['symbol'] == player2_symbol),
+            'message': "Both players connected. Game starting!",
+            'your_symbol': player1_symbol
+        }, room=player1_info['sid'])
         
-        <button id="reset-button" class="mt-8 px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition-colors duration-300" disabled>Request Rematch</button>
-    </div>
+        # Send game_ready to player 2
+        emit('game_ready', {
+            'player1_discord_id': next(did for did, p in game_state['players'].items() if p['symbol'] == player1_symbol),
+            'player2_discord_id': next(did for did, p in game_state['players'].items() if p['symbol'] == player2_symbol),
+            'message': "Both players connected. Game starting!",
+            'your_symbol': player2_symbol
+        }, room=player2_info['sid'])
 
-    <div id="message-box" class="message-box">
-        <p id="message-text" class="text-2xl font-semibold text-gray-800 mb-4"></p>
-        <button id="message-ok-button" class="px-5 py-2 bg-indigo-500 text-white font-semibold rounded-md hover:bg-indigo-600 transition-colors duration-300">OK</button>
-    </div>
-    <div id="overlay" class="overlay"></div>
+        socketio.emit('game_state', game_state, room=game_id) # Send initial state to both
 
-    <div id="loading-overlay" class="loading-overlay">
-        <div class="spinner"></div>
-        <p id="loading-text">Connecting to game server...</p>
-    </div>
+@socketio.on('make_move')
+def handle_make_move(data):
+    game_id = data.get('game_id')
+    cell_index = data.get('cell_index') # For Tic-Tac-Toe
+    column = data.get('column')       # For Connect Four
+    
+    if game_id not in active_games:
+        emit('error', {'message': 'Game not found.'}, room=request.sid)
+        return
 
-    <script>
-        // --- Configuration ---
-        // This will now be dynamically set from the URL parameter
-        let GAME_SERVER_URL = "http://127.0.0.1:5000"; // Default for local testing, overridden by URL
-        const ROWS = 6;
-        const COLS = 7;
-
-        // --- DOM Elements ---
-        const boardContainer = document.getElementById('connect4-board');
-        const statusDisplay = document.getElementById('status');
-        const gameInfoDisplay = document.getElementById('game-info');
-        const resetButton = document.getElementById('reset-button');
-        const messageBox = document.getElementById('message-box');
-        const messageText = document.getElementById('message-text');
-        const messageOkButton = document.getElementById('message-ok-button');
-        const overlay = document.getElementById('overlay');
-        const loadingOverlay = document.getElementById('loading-overlay');
-        const loadingText = document.getElementById('loading-text');
-
-        // --- Game State Variables ---
-        let socket;
-        let gameId = null;
-        let discordId = null; // The ID of the current user playing
-        let gameType = null; // 'tic_tac_toe' or 'connect_four'
-        let playerSymbol = null; // 'R' or 'Y' for the current user (Red or Yellow)
-        let currentGameState = null; // Stores the state received from the server
-
-        // --- Utility Functions ---
-        function getQueryParams() {
-            const params = new URLSearchParams(window.location.search);
-            return {
-                game_id: params.get('game_id'),
-                discord_id: params.get('discord_id'),
-                game_type: params.get('game_type'),
-                server_url: params.get('server_url') // New: Read server_url from URL
-            };
-        }
-
-        function displayMessage(message) {
-            messageText.innerText = message;
-            messageBox.classList.add('show');
-            overlay.classList.add('show');
-        }
-
-        function hideMessage() {
-            messageBox.classList.remove('show');
-            overlay.classList.remove('show');
-        }
-
-        function showLoading(text = "Loading...") {
-            loadingText.innerText = text;
-            loadingOverlay.classList.remove('hidden');
-        }
-
-        function hideLoading() {
-            loadingOverlay.classList.add('hidden');
-        }
-
-        function createBoard() {
-            boardContainer.innerHTML = ''; // Clear existing board
-            for (let r = 0; r < ROWS; r++) {
-                for (let c = 0; c < COLS; c++) {
-                    const cell = document.createElement('div');
-                    cell.classList.add('cell', 'rounded-full');
-                    cell.dataset.row = r;
-                    cell.dataset.col = c;
-                    cell.addEventListener('click', () => handleCellClick(c));
-                    boardContainer.appendChild(cell);
-                }
-            }
-        }
-
-        function updateBoardUI() {
-            if (!currentGameState) return;
-
-            const board = currentGameState.board;
-            for (let r = 0; r < ROWS; r++) {
-                for (let c = 0; c < COLS; c++) {
-                    const cell = boardContainer.children[r * COLS + c];
-                    cell.innerHTML = ''; // Clear previous chip
-                    cell.classList.remove('red', 'yellow');
-
-                    const chipColor = board[r][c];
-                    if (chipColor === 'R') {
-                        const chip = document.createElement('div');
-                        chip.classList.add('chip', 'red');
-                        cell.appendChild(chip);
-                    } else if (chipColor === 'Y') {
-                        const chip = document.createElement('div');
-                        chip.classList.add('chip', 'yellow');
-                        cell.appendChild(chip);
-                    }
-                }
-            }
-
-            if (currentGameState.winner) {
-                statusDisplay.innerHTML = `Player ${currentGameState.winner === 'R' ? 'Red' : 'Yellow'} wins!`;
-                resetButton.disabled = false;
-            } else if (currentGameState.draw) {
-                statusDisplay.innerHTML = `It's a draw!`;
-                resetButton.disabled = false;
-            } else {
-                statusDisplay.innerHTML = `Player ${currentGameState.turn === 'R' ? 'Red' : 'Yellow'}'s Turn`;
-                resetButton.disabled = true; // Only enable reset after game ends
-            }
-            gameInfoDisplay.innerHTML = `You are **${playerSymbol === 'R' ? 'Red' : (playerSymbol === 'Y' ? 'Yellow' : '...')}**`;
-        }
-        
-        function handleCellClick(column) {
-            if (!socket || !currentGameState || currentGameState.winner || currentGameState.draw || playerSymbol !== currentGameState.turn) {
-                displayMessage("It's not your turn, or the game is not ready/over.");
-                return;
-            }
-            socket.emit('make_move', { game_id: gameId, column: column });
-        }
-
-
-        // --- Socket.IO Event Handlers ---
-        function setupSocket() {
-            const params = getQueryParams();
-            gameId = params.game_id;
-            discordId = params.discord_id;
-            gameType = params.game_type;
-
-            // Override GAME_SERVER_URL if provided in URL parameters
-            if (params.server_url) {
-                GAME_SERVER_URL = params.server_url;
-            }
-
-            if (!gameId || !discordId || !gameType) {
-                displayMessage("Error: Missing game ID, Discord ID, or game type. Please join via Discord bot.");
-                hideLoading();
-                return;
-            }
-
-            socket = io(GAME_SERVER_URL);
-
-            socket.on('connect', () => {
-                console.log('Connected to game server.');
-                loadingText.innerText = `Connected. Joining game ${gameId}...`;
-                socket.emit('join_game', { game_id: gameId, discord_id: discordId, game_type: gameType });
-            });
-
-            socket.on('connect_error', (error) => {
-                console.error("Socket.IO Connect Error:", error);
-                displayMessage(`Failed to connect to game server: ${error.message}. Ensure the game server is running and accessible.`);
-                hideLoading();
-            });
-
-            socket.on('disconnect', () => {
-                console.log('Disconnected from game server.');
-                displayMessage("Disconnected from game server. Please refresh or rejoin.");
-                showLoading("Disconnected from game server. Reconnecting...");
-            });
-
-            socket.on('error', (data) => {
-                console.error('Server Error:', data.message);
-                displayMessage(`Error: ${data.message}`);
-                hideLoading();
-            });
-
-            socket.on('message', (data) => {
-                console.log('Server Message:', data.message);
-                if (data.message.includes("Waiting for another player")) {
-                     statusDisplay.innerHTML = data.message;
-                     loadingText.innerText = data.message;
-                } else {
-                    displayMessage(data.message);
-                }
-            });
+    game_state = active_games[game_id]
+    
+    # Verify it's the player's turn and their SID matches
+    player_discord_id_making_move = None
+    player_symbol = None
+    for did, player_info in game_state['players'].items():
+        if player_info['sid'] == request.sid:
+            player_discord_id_making_move = did
+            player_symbol = player_info['symbol']
+            break
             
-            socket.on('game_ready', (data) => {
-                console.log('Game Ready:', data);
-                hideLoading();
-                playerSymbol = data.your_symbol;
-                gameInfoDisplay.innerHTML = `You are **${playerSymbol === 'R' ? 'Red' : 'Yellow'}**`;
-                statusDisplay.innerHTML = "Game started!";
-            });
+    if not player_discord_id_making_move or player_symbol != game_state['turn']:
+        emit('error', {'message': "It's not your turn or you are not a player in this game."}, room=request.sid)
+        return
+        
+    if game_state['winner'] or game_state['draw']:
+        emit('error', {'message': 'Game is already over.'}, room=request.sid)
+        return
 
-            socket.on('game_state', (gameState) => {
-                console.log('Received game state:', gameState);
-                currentGameState = gameState;
-                updateBoardUI();
-                hideLoading(); // Hide loading once first state is received
-            });
+    if game_state['type'] == 'tic_tac_toe':
+        if cell_index is None:
+            emit('error', {'message': 'Missing cell_index for Tic-Tac-Toe move.'}, room=request.sid)
+            return
+        if not (0 <= cell_index <= 8 and game_state['board'][cell_index] == ''):
+            emit('error', {'message': 'Invalid or taken cell.'}, room=request.sid)
+            return
 
-            socket.on('game_over', (data) => {
-                console.log('Game Over:', data);
-                if (data.winner) {
-                    displayMessage(`Game Over! Player ${data.winner === 'R' ? 'Red' : 'Yellow'} wins!`);
-                } else if (data.draw) {
-                    displayMessage("Game Over! It's a draw!");
-                }
-                resetButton.disabled = false; // Enable reset button
-            });
+        game_state['board'][cell_index] = game_state['turn']
 
-            socket.on('opponent_left', (data) => {
-                displayMessage(data.message);
-                resetButton.disabled = true; // Disable reset if opponent left mid-game
-                if (currentGameState && !currentGameState.winner) { // Award win only if game wasn't already decided
-                    currentGameState.winner = playerSymbol; 
-                    statusDisplay.innerHTML = `Opponent left. You win!`;
-                    updateBoardUI();
-                }
-            });
-        }
+        if check_win_ttt(game_state['board'], game_state['turn']):
+            game_state['winner'] = game_state['turn']
+            socketio.emit('game_state', game_state, room=game_id)
+            socketio.emit('game_over', {
+                'winner_symbol': game_state['winner'],
+                'winner_discord_id': player_discord_id_making_move, # The player who made the winning move
+                'message': f"Player {game_state['winner']} wins!"
+            }, room=game_id)
+            print(f"Tic-Tac-Toe Game {game_id} over: Player {game_state['winner']} wins.")
+            # Do NOT delete the game here, allow for rematch
+            return
 
-        // --- Event Listeners ---
-        resetButton.addEventListener('click', () => {
-            if (socket && gameId) {
-                // Confirm with user before resetting
-                displayMessage("Are you sure you want to request a rematch?");
-                document.getElementById('message-ok-button').onclick = () => {
-                    hideMessage();
-                    socket.emit('reset_game', { game_id: gameId });
-                };
-            }
-        });
+        if all(cell != '' for cell in game_state['board']):
+            game_state['draw'] = True
+            socketio.emit('game_state', game_state, room=game_id)
+            socketio.emit('game_over', {
+                'draw': True,
+                'message': "It's a draw!"
+            }, room=game_id)
+            print(f"Tic-Tac-Toe Game {game_id} over: Draw.")
+            # Do NOT delete the game here, allow for rematch
+            return
+            
+        game_state['turn'] = 'O' if game_state['turn'] == 'X' else 'X'
+        print(f"Tic-Tac-Toe Game {game_id}: Player {player_symbol} moved to {cell_index}. Turn is now {game_state['turn']}.")
 
-        messageOkButton.addEventListener('click', hideMessage); // Default behavior
-        document.getElementById('message-ok-button').onclick = hideMessage; // Ensure default on load
+    elif game_state['type'] == 'connect_four':
+        if column is None:
+            emit('error', {'message': 'Missing column for Connect Four move.'}, room=request.sid)
+            return
+        if not (0 <= column <= 6):
+            emit('error', {'message': 'Invalid column.'}, room=request.sid)
+            return
 
-        // --- Initialization ---
-        window.onload = () => {
-            showLoading("Connecting to game server...");
-            createBoard(); // Create the visual board
-            setupSocket();
-        };
-    </script>
-</body>
-</html>
+        row_index = -1
+        for r in range(5, -1, -1): # Check from bottom row up
+            if game_state['board'][r][column] == '':
+                row_index = r
+                break
+        
+        if row_index == -1:
+            emit('error', {'message': 'Column is full.'}, room=request.sid)
+            return
+            
+        game_state['board'][row_index][column] = game_state['turn']
+
+        if check_win_c4(game_state['board'], game_state['turn']):
+            game_state['winner'] = game_state['turn']
+            socketio.emit('game_state', game_state, room=game_id)
+            socketio.emit('game_over', {
+                'winner_symbol': game_state['winner'],
+                'winner_discord_id': player_discord_id_making_move, # The player who made the winning move
+                'message': f"Player {game_state['winner']} wins!"
+            }, room=game_id)
+            print(f"Connect Four Game {game_id} over: Player {game_state['winner']} wins.")
+            # Do NOT delete the game here, allow for rematch
+            return
+
+        # Check for draw (board full)
+        if all(game_state['board'][0][c] != '' for c in range(7)): # Check if top row is full
+            game_state['draw'] = True
+            socketio.emit('game_state', game_state, room=game_id)
+            socketio.emit('game_over', {
+                'draw': True,
+                'message': "It's a draw!"
+            }, room=game_id)
+            print(f"Connect Four Game {game_id} over: Draw.")
+            # Do NOT delete the game here, allow for rematch
+            return
+            
+        game_state['turn'] = 'Y' if game_state['turn'] == 'R' else 'R'
+        print(f"Connect Four Game {game_id}: Player {player_symbol} moved to column {column}. Turn is now {game_state['turn']}.")
+
+    socketio.emit('game_state', game_state, room=game_id)
+
+
+@socketio.on('reset_game')
+def handle_reset_game(data):
+    game_id = data.get('game_id')
+    if game_id not in active_games:
+        emit('error', {'message': 'Game not found.'}, room=request.sid)
+        return
+
+    game_state = active_games[game_id]
+    
+    if game_state['type'] == 'tic_tac_toe':
+        game_state['board'] = ['', '', '', '', '', '', '', '', '']
+        game_state['turn'] = 'X'
+    elif game_state['type'] == 'connect_four':
+        game_state['board'] = [['' for _ in range(7)] for _ in range(6)]
+        game_state['turn'] = 'R'
+
+    game_state['winner'] = None
+    game_state['draw'] = False
+
+    socketio.emit('game_state', game_state, room=game_id)
+    socketio.emit('message', {'message': 'Game has been reset!'}, room=game_id)
+    print(f"Game {game_id} reset.")
+
+
+def check_win_ttt(board, player_symbol):
+    winning_conditions = [
+        [0, 1, 2], [3, 4, 5], [6, 7, 8], # Rows
+        [0, 3, 6], [1, 4, 7], [2, 5, 8], # Columns
+        [0, 4, 8], [2, 4, 6]             # Diagonals
+    ]
+    for condition in winning_conditions:
+        if board[condition[0]] == player_symbol and \
+           board[condition[1]] == player_symbol and \
+           board[condition[2]] == player_symbol:
+            return True
+    return False
+
+def check_win_c4(board, player_symbol):
+    rows = 6
+    cols = 7
+
+    # Check horizontal
+    for r in range(rows):
+        for c in range(cols - 3):
+            if all(board[r][c+i] == player_symbol for i in range(4)):
+                return True
+
+    # Check vertical
+    for c in range(cols):
+        for r in range(rows - 3):
+            if all(board[r+i][c] == player_symbol for i in range(4)):
+                return True
+
+    # Check diagonal (top-left to bottom-right)
+    for r in range(rows - 3):
+        for c in range(cols - 3):
+            if all(board[r+i][c+i] == player_symbol for i in range(4)):
+                return True
+
+    # Check diagonal (bottom-left to top-right)
+    for r in range(3, rows):
+        for c in range(cols - 3):
+            if all(board[r-i][c+i] == player_symbol for i in range(4)):
+                return True
+    return False
+
+
+if __name__ == '__main__':
+    print("Starting Flask-SocketIO game server on http://127.0.0.1:5000")
+    socketio.run(app, debug=True) # debug=True enables reloader and debugger
