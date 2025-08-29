@@ -3,62 +3,70 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Connect Four</title>
+    <title>Connect Four Online</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <!-- Socket.IO client library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
     <style>
         body {
             font-family: 'Inter', sans-serif;
-            background-color: #e0f2f7; /* Light cyan background */
+            background-color: #f0f4f8; /* Light blue-grey background */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 1rem;
         }
-        .board-container {
-            background-color: #3b82f6; /* Blue for the board itself */
+        .game-container {
+            background-color: #3b82f6; /* Blue board for Connect Four */
             border-radius: 12px;
-            padding: 20px;
+            padding: 1rem;
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            max-width: fit-content;
         }
-        .board {
+        .connect4-board {
             display: grid;
-            grid-template-columns: repeat(7, 60px);
-            grid-template-rows: repeat(6, 60px);
-            gap: 5px;
+            grid-template-columns: repeat(7, 60px); /* 7 columns */
+            grid-template-rows: repeat(6, 60px);   /* 6 rows */
+            gap: 4px;
         }
         .cell {
             width: 60px;
             height: 60px;
-            background-color: #f8fafc; /* White for empty slots */
+            background-color: #e2e8f0; /* Empty slot color */
             border-radius: 50%;
             display: flex;
             justify-content: center;
             align-items: center;
-            position: relative;
-            overflow: hidden; /* To ensure coin animation stays within */
+            cursor: pointer;
+            transition: background-color 0.2s ease-in-out;
+            position: relative; /* For the dropping animation */
+            overflow: hidden; /* Ensure chip stays within bounds during drop */
         }
-        .coin {
-            width: 50px;
-            height: 50px;
+        .cell.hovered:not(.red):not(.yellow) {
+            background-color: #cbd5e0; /* Lighter on hover for empty cells */
+        }
+        .chip {
+            width: 50px; /* Slightly smaller than cell */
+            height: 50px; /* Slightly smaller than cell */
             border-radius: 50%;
             position: absolute;
-            transform: translateY(-200px); /* Start above the board for drop animation */
-            animation: drop 0.5s ease-out forwards;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            margin: auto;
+            transition: transform 0.3s ease-out; /* For dropping effect */
         }
-        .player1 {
-            background-color: #ef4444; /* Red for Player 1 */
+        .chip.red {
+            background-color: #ef4444; /* Red chip */
         }
-        .player2 {
-            background-color: #facc15; /* Yellow for Player 2 */
+        .chip.yellow {
+            background-color: #fcd34d; /* Yellow chip */
         }
-        @keyframes drop {
-            to { transform: translateY(0); }
-        }
-        .turn-indicator {
-            height: 20px;
-            width: 20px;
-            border-radius: 50%;
-            display: inline-block;
-            vertical-align: middle;
-            margin-left: 8px;
-        }
+
+        /* --- Message Box and Overlay (Reused from Tic-Tac-Toe) --- */
         .message-box {
             position: fixed;
             top: 50%;
@@ -73,6 +81,7 @@
             opacity: 0;
             visibility: hidden;
             transition: opacity 0.3s ease-in-out, visibility 0.3s ease-in-out;
+            max-width: 90%;
         }
         .message-box.show {
             opacity: 1;
@@ -94,21 +103,54 @@
             opacity: 1;
             visibility: visible;
         }
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 1.5rem;
+            z-index: 2000;
+            transition: opacity 0.3s ease-in-out;
+        }
+        .loading-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid #fff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 1rem;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
-<body class="flex flex-col items-center justify-center min-h-screen p-4">
-    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-2xl text-center mb-8">
-        <h1 class="text-4xl font-bold text-gray-800 mb-6">Connect Four</h1>
-        <div id="status" class="text-xl font-semibold text-gray-700 mb-6 flex items-center justify-center">
-            Player <span id="current-player-text">1</span>'s Turn
-            <span id="turn-color-indicator" class="turn-indicator player1"></span>
-        </div>
-        <div class="board-container mx-auto">
-            <div id="board" class="board">
-                <!-- Cells will be generated by JavaScript -->
+<body class="flex items-center justify-center min-h-screen p-4">
+    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-lg text-center">
+        <h1 class="text-4xl font-bold text-gray-800 mb-6">Connect Four Online</h1>
+        <div id="status" class="text-xl font-semibold text-gray-700 mb-6">Connecting...</div>
+        <div id="game-info" class="text-gray-600 mb-4"></div>
+        
+        <div class="game-container mx-auto">
+            <div class="connect4-board" id="connect4-board">
+                <!-- Cells will be dynamically generated by JavaScript -->
             </div>
         </div>
-        <button id="reset-button" class="mt-8 px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition-colors duration-300">Reset Game</button>
+        
+        <button id="reset-button" class="mt-8 px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition-colors duration-300" disabled>Request Rematch</button>
     </div>
 
     <div id="message-box" class="message-box">
@@ -117,42 +159,47 @@
     </div>
     <div id="overlay" class="overlay"></div>
 
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <p id="loading-text">Connecting to game server...</p>
+    </div>
+
     <script>
-        const boardElement = document.getElementById('board');
+        // --- Configuration ---
+        // This will now be dynamically set from the URL parameter
+        let GAME_SERVER_URL = "http://127.0.0.1:5000"; // Default for local testing, overridden by URL
+        const ROWS = 6;
+        const COLS = 7;
+
+        // --- DOM Elements ---
+        const boardContainer = document.getElementById('connect4-board');
         const statusDisplay = document.getElementById('status');
-        const currentPlayerText = document.getElementById('current-player-text');
-        const turnColorIndicator = document.getElementById('turn-color-indicator');
+        const gameInfoDisplay = document.getElementById('game-info');
         const resetButton = document.getElementById('reset-button');
         const messageBox = document.getElementById('message-box');
         const messageText = document.getElementById('message-text');
         const messageOkButton = document.getElementById('message-ok-button');
         const overlay = document.getElementById('overlay');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingText = document.getElementById('loading-text');
 
-        const rows = 6;
-        const cols = 7;
-        let board = [];
-        let currentPlayer = 1; // 1 for Player 1 (red), 2 for Player 2 (yellow)
-        let gameActive = true;
+        // --- Game State Variables ---
+        let socket;
+        let gameId = null;
+        let discordId = null; // The ID of the current user playing
+        let gameType = null; // 'tic_tac_toe' or 'connect_four'
+        let playerSymbol = null; // 'R' or 'Y' for the current user (Red or Yellow)
+        let currentGameState = null; // Stores the state received from the server
 
-        function createBoard() {
-            board = Array(rows).fill(0).map(() => Array(cols).fill(0));
-            boardElement.innerHTML = '';
-            for (let r = 0; r < rows; r++) {
-                for (let c = 0; c < cols; c++) {
-                    const cell = document.createElement('div');
-                    cell.classList.add('cell');
-                    cell.dataset.row = r;
-                    cell.dataset.col = c;
-                    cell.addEventListener('click', () => handleCellClick(c));
-                    boardElement.appendChild(cell);
-                }
-            }
-            updateStatusDisplay();
-        }
-
-        function updateStatusDisplay() {
-            currentPlayerText.textContent = currentPlayer;
-            turnColorIndicator.className = `turn-indicator player${currentPlayer}`;
+        // --- Utility Functions ---
+        function getQueryParams() {
+            const params = new URLSearchParams(window.location.search);
+            return {
+                game_id: params.get('game_id'),
+                discord_id: params.get('discord_id'),
+                game_type: params.get('game_type'),
+                server_url: params.get('server_url') // New: Read server_url from URL
+            };
         }
 
         function displayMessage(message) {
@@ -166,113 +213,185 @@
             overlay.classList.remove('show');
         }
 
-        async function handleCellClick(col) {
-            if (!gameActive) return;
+        function showLoading(text = "Loading...") {
+            loadingText.innerText = text;
+            loadingOverlay.classList.remove('hidden');
+        }
 
-            // Find the lowest empty row in the clicked column
-            let row = -1;
-            for (let r = rows - 1; r >= 0; r--) {
-                if (board[r][col] === 0) {
-                    row = r;
-                    break;
+        function hideLoading() {
+            loadingOverlay.classList.add('hidden');
+        }
+
+        function createBoard() {
+            boardContainer.innerHTML = ''; // Clear existing board
+            for (let r = 0; r < ROWS; r++) {
+                for (let c = 0; c < COLS; c++) {
+                    const cell = document.createElement('div');
+                    cell.classList.add('cell', 'rounded-full');
+                    cell.dataset.row = r;
+                    cell.dataset.col = c;
+                    cell.addEventListener('click', () => handleCellClick(c));
+                    boardContainer.appendChild(cell);
+                }
+            }
+        }
+
+        function updateBoardUI() {
+            if (!currentGameState) return;
+
+            const board = currentGameState.board;
+            for (let r = 0; r < ROWS; r++) {
+                for (let c = 0; c < COLS; c++) {
+                    const cell = boardContainer.children[r * COLS + c];
+                    cell.innerHTML = ''; // Clear previous chip
+                    cell.classList.remove('red', 'yellow');
+
+                    const chipColor = board[r][c];
+                    if (chipColor === 'R') {
+                        const chip = document.createElement('div');
+                        chip.classList.add('chip', 'red');
+                        cell.appendChild(chip);
+                    } else if (chipColor === 'Y') {
+                        const chip = document.createElement('div');
+                        chip.classList.add('chip', 'yellow');
+                        cell.appendChild(chip);
+                    }
                 }
             }
 
-            if (row === -1) {
-                // Column is full
-                displayMessage("This column is full! Choose another one.");
+            if (currentGameState.winner) {
+                statusDisplay.innerHTML = `Player ${currentGameState.winner === 'R' ? 'Red' : 'Yellow'} wins!`;
+                resetButton.disabled = false;
+            } else if (currentGameState.draw) {
+                statusDisplay.innerHTML = `It's a draw!`;
+                resetButton.disabled = false;
+            } else {
+                statusDisplay.innerHTML = `Player ${currentGameState.turn === 'R' ? 'Red' : 'Yellow'}'s Turn`;
+                resetButton.disabled = true; // Only enable reset after game ends
+            }
+            gameInfoDisplay.innerHTML = `You are **${playerSymbol === 'R' ? 'Red' : (playerSymbol === 'Y' ? 'Yellow' : '...')}**`;
+        }
+        
+        function handleCellClick(column) {
+            if (!socket || !currentGameState || currentGameState.winner || currentGameState.draw || playerSymbol !== currentGameState.turn) {
+                displayMessage("It's not your turn, or the game is not ready/over.");
+                return;
+            }
+            socket.emit('make_move', { game_id: gameId, column: column });
+        }
+
+
+        // --- Socket.IO Event Handlers ---
+        function setupSocket() {
+            const params = getQueryParams();
+            gameId = params.game_id;
+            discordId = params.discord_id;
+            gameType = params.game_type;
+
+            // Override GAME_SERVER_URL if provided in URL parameters
+            if (params.server_url) {
+                GAME_SERVER_URL = params.server_url;
+            }
+
+            if (!gameId || !discordId || !gameType) {
+                displayMessage("Error: Missing game ID, Discord ID, or game type. Please join via Discord bot.");
+                hideLoading();
                 return;
             }
 
-            board[row][col] = currentPlayer;
-            const cellElement = boardElement.children[row * cols + col];
-            const coin = document.createElement('div');
-            coin.classList.add('coin', `player${currentPlayer}`);
-            cellElement.appendChild(coin);
+            socket = io(GAME_SERVER_URL);
 
-            // Wait for coin animation to finish before checking win/changing player
-            await new Promise(resolve => setTimeout(resolve, 500)); 
+            socket.on('connect', () => {
+                console.log('Connected to game server.');
+                loadingText.innerText = `Connected. Joining game ${gameId}...`;
+                socket.emit('join_game', { game_id: gameId, discord_id: discordId, game_type: gameType });
+            });
 
-            if (checkWin(row, col)) {
-                displayMessage(`Player ${currentPlayer} wins!`);
-                gameActive = false;
-                // Here you would send win data to your Discord bot's database
-                // Example: sendGameResultToBot(currentPlayer, 'connectfour', 'win');
-            } else if (checkDraw()) {
-                displayMessage("It's a draw!");
-                gameActive = false;
-                // Example: sendGameResultToBot('draw', 'connectfour');
-            } else {
-                currentPlayer = currentPlayer === 1 ? 2 : 1;
-                updateStatusDisplay();
-            }
+            socket.on('connect_error', (error) => {
+                console.error("Socket.IO Connect Error:", error);
+                displayMessage(`Failed to connect to game server: ${error.message}. Ensure the game server is running and accessible.`);
+                hideLoading();
+            });
+
+            socket.on('disconnect', () => {
+                console.log('Disconnected from game server.');
+                displayMessage("Disconnected from game server. Please refresh or rejoin.");
+                showLoading("Disconnected from game server. Reconnecting...");
+            });
+
+            socket.on('error', (data) => {
+                console.error('Server Error:', data.message);
+                displayMessage(`Error: ${data.message}`);
+                hideLoading();
+            });
+
+            socket.on('message', (data) => {
+                console.log('Server Message:', data.message);
+                if (data.message.includes("Waiting for another player")) {
+                     statusDisplay.innerHTML = data.message;
+                     loadingText.innerText = data.message;
+                } else {
+                    displayMessage(data.message);
+                }
+            });
+            
+            socket.on('game_ready', (data) => {
+                console.log('Game Ready:', data);
+                hideLoading();
+                playerSymbol = data.your_symbol;
+                gameInfoDisplay.innerHTML = `You are **${playerSymbol === 'R' ? 'Red' : 'Yellow'}**`;
+                statusDisplay.innerHTML = "Game started!";
+            });
+
+            socket.on('game_state', (gameState) => {
+                console.log('Received game state:', gameState);
+                currentGameState = gameState;
+                updateBoardUI();
+                hideLoading(); // Hide loading once first state is received
+            });
+
+            socket.on('game_over', (data) => {
+                console.log('Game Over:', data);
+                if (data.winner) {
+                    displayMessage(`Game Over! Player ${data.winner === 'R' ? 'Red' : 'Yellow'} wins!`);
+                } else if (data.draw) {
+                    displayMessage("Game Over! It's a draw!");
+                }
+                resetButton.disabled = false; // Enable reset button
+            });
+
+            socket.on('opponent_left', (data) => {
+                displayMessage(data.message);
+                resetButton.disabled = true; // Disable reset if opponent left mid-game
+                if (currentGameState && !currentGameState.winner) { // Award win only if game wasn't already decided
+                    currentGameState.winner = playerSymbol; 
+                    statusDisplay.innerHTML = `Opponent left. You win!`;
+                    updateBoardUI();
+                }
+            });
         }
 
-        function checkWin(lastRow, lastCol) {
-            const player = board[lastRow][lastCol];
-
-            // Check horizontal
-            for (let c = 0; c <= cols - 4; c++) {
-                if (board[lastRow][c] === player &&
-                    board[lastRow][c + 1] === player &&
-                    board[lastRow][c + 2] === player &&
-                    board[lastRow][c + 3] === player) {
-                    return true;
-                }
+        // --- Event Listeners ---
+        resetButton.addEventListener('click', () => {
+            if (socket && gameId) {
+                // Confirm with user before resetting
+                displayMessage("Are you sure you want to request a rematch?");
+                document.getElementById('message-ok-button').onclick = () => {
+                    hideMessage();
+                    socket.emit('reset_game', { game_id: gameId });
+                };
             }
+        });
 
-            // Check vertical
-            for (let r = 0; r <= rows - 4; r++) {
-                if (board[r][lastCol] === player &&
-                    board[r + 1][lastCol] === player &&
-                    board[r + 2][lastCol] === player &&
-                    board[r + 3][lastCol] === player) {
-                    return true;
-                }
-            }
+        messageOkButton.addEventListener('click', hideMessage); // Default behavior
+        document.getElementById('message-ok-button').onclick = hideMessage; // Ensure default on load
 
-            // Check diagonal (top-left to bottom-right)
-            for (let r = 0; r <= rows - 4; r++) {
-                for (let c = 0; c <= cols - 4; c++) {
-                    if (board[r][c] === player &&
-                        board[r + 1][c + 1] === player &&
-                        board[r + 2][c + 2] === player &&
-                        board[r + 3][c + 3] === player) {
-                        return true;
-                    }
-                }
-            }
-
-            // Check diagonal (top-right to bottom-left)
-            for (let r = 0; r <= rows - 4; r++) {
-                for (let c = 3; c < cols; c++) {
-                    if (board[r][c] === player &&
-                        board[r + 1][c - 1] === player &&
-                        board[r + 2][c - 2] === player &&
-                        board[r + 3][c - 3] === player) {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
-        }
-
-        function checkDraw() {
-            return board.every(row => row.every(cell => cell !== 0));
-        }
-
-        function resetGame() {
-            currentPlayer = 1;
-            gameActive = true;
-            hideMessage();
-            createBoard();
-        }
-
-        resetButton.addEventListener('click', resetGame);
-        messageOkButton.addEventListener('click', hideMessage);
-
-        createBoard(); // Initialize the board when the page loads
+        // --- Initialization ---
+        window.onload = () => {
+            showLoading("Connecting to game server...");
+            createBoard(); // Create the visual board
+            setupSocket();
+        };
     </script>
 </body>
 </html>
